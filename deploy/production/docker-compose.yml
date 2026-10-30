@@ -1,0 +1,273 @@
+# Production stack for the fork, sized for a 2 vCPU / 4 GB VPS.
+# Versioned without secrets: every secret comes from ./.env (chmod 600, never
+# committed — see .env.production.example). App images are built from this
+# fork by .github/workflows/fork-images.yml; IMAGE_TAG selects the version.
+#
+# Only Caddy publishes ports (80/443). Postgres, Redis, RustFS and the
+# JavaScript executor are reachable only on internal Docker networks.
+name: chatbotx
+
+x-app: &app
+  restart: unless-stopped
+  env_file: ./.env
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+  networks:
+    - internal
+
+services:
+  postgres:
+    image: timescale/timescaledb-ha:pg18-all
+    restart: unless-stopped
+    logging: *logging
+    networks: [internal]
+    volumes:
+      - db-data:/home/postgres/pgdata
+    command:
+      - postgres
+      - -c
+      - max_connections=150
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    shm_size: 256m
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [internal]
+    # BullMQ requires noeviction. AOF keeps queued jobs across restarts.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - cache-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  filesystem:
+    image: rustfs/rustfs:latest
+    restart: unless-stopped
+    logging: *logging
+    networks: [internal]
+    command: server /data
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY}
+      RUSTFS_API_CORS_ALLOW_ORIGIN: ${NEXT_PUBLIC_BUILDER_URL}
+    volumes:
+      - filesystem-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -f http://127.0.0.1:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # One-shot: creates the bucket and makes only its public/ prefix anonymous-readable.
+  filesystem-init:
+    image: rustfs/rc:latest
+    restart: "no"
+    networks: [internal]
+    depends_on:
+      filesystem:
+        condition: service_healthy
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+    entrypoint: >
+      /bin/sh -c "rc alias set local http://filesystem:9000
+      $${RUSTFS_ACCESS_KEY} $${RUSTFS_SECRET_KEY} && rc mb local/$${S3_BUCKET}
+      --ignore-existing && touch /tmp/empty && rc cp /tmp/empty
+      local/$${S3_BUCKET}/public/ && rc anonymous set public local/$${S3_BUCKET}/public"
+
+  javascript-executor:
+    image: ghcr.io/${IMAGE_NAMESPACE}/chatbotx-javascript-executor:${IMAGE_TAG}
+    restart: unless-stopped
+    logging: *logging
+    # Same isolation as upstream docker-compose.dev.yml. No env_file on purpose:
+    # the executor only ever sees its own token.
+    environment:
+      JAVASCRIPT_EXECUTOR_TOKEN: ${JAVASCRIPT_EXECUTOR_TOKEN}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-1}
+    networks: [javascript-executor]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 384M
+          pids: 128
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3210/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  builder:
+    <<: *app
+    image: ghcr.io/${IMAGE_NAMESPACE}/chatbotx-builder:${IMAGE_TAG}
+    # Migrations are NOT run on start: deploy.sh runs them explicitly after a
+    # backup. The seed (demo user with a public password) is never run here.
+    environment:
+      SNOWFLAKE_PLACE_ID: "1"
+      NODE_OPTIONS: --max-old-space-size=900
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      filesystem:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  worker:
+    <<: *app
+    image: ghcr.io/${IMAGE_NAMESPACE}/chatbotx-worker:${IMAGE_TAG}
+    command: ["worker", "standalone"]
+    networks: [internal, javascript-executor]
+    environment:
+      SNOWFLAKE_PLACE_ID: "2"
+      JAVASCRIPT_EXECUTOR_URL: http://javascript-executor:3210
+      # Entry point defaults are 80/40 — too many for one small Postgres.
+      DATABASE_POOL_MAX: "25"
+      SHARD_POOL_MAX: "10"
+      NODE_OPTIONS: --max-old-space-size=768
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      filesystem:
+        condition: service_healthy
+      javascript-executor:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  realtime:
+    <<: *app
+    image: ghcr.io/${IMAGE_NAMESPACE}/chatbotx-realtime:${IMAGE_TAG}
+    environment:
+      SNOWFLAKE_PLACE_ID: "3"
+      # Presence reports go straight to the builder container.
+      NEXT_PUBLIC_BUILDER_URL: http://builder:3000
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1999/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *logging
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      S3_DOMAIN: ${S3_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      S3_BUCKET: ${S3_BUCKET}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      internal:
+        # Containers resolve the public hostnames to Caddy itself, so the
+        # server-side S3 SDK and self-calls reach a valid TLS endpoint without
+        # hair-pinning through the public IP.
+        aliases:
+          - ${APP_DOMAIN}
+          - ${S3_DOMAIN}
+    depends_on:
+      - builder
+      - realtime
+      - filesystem
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+networks:
+  internal:
+    driver: bridge
+  javascript-executor:
+    driver: bridge
+    internal: true
+
+volumes:
+  db-data:
+  filesystem-data:
+  cache-data:
+  caddy-data:
+  caddy-config:

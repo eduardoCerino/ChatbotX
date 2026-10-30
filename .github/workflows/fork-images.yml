@@ -1,0 +1,160 @@
+name: Fork - Build images and deploy
+
+# Fork-only pipeline (eduardoCerino/ChatbotX). Kept in its own file so upstream
+# merges never conflict with release.yml. Manual only: nothing here runs on
+# push or pull_request, so untrusted PR code can never reach the `production`
+# environment or its secrets.
+#
+# - Builds the five images from THIS fork's source with the upstream Dockerfiles.
+# - Tags every image `sha-<full commit sha>` (immutable) plus `fork-latest`.
+# - Optional deploy job runs only when `deploy: true`, inside the `production`
+#   environment (configure "Required reviewers" on it to get an approval gate).
+#   The VPS side is a forced-command SSH key that can only run
+#   deploy/production/scripts/ci-deploy-gate.sh with a validated tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit SHA to build (default: the selected branch)"
+        required: false
+        type: string
+      run_checks:
+        description: "Run the ci.yml quality gate (lint, types, tests) before building"
+        required: true
+        default: true
+        type: boolean
+      deploy:
+        description: "Deploy the built images to production after the build (needs approval)"
+        required: true
+        default: false
+        type: boolean
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  BUILD_PLATFORMS: linux/amd64
+
+concurrency:
+  group: fork-images-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      namespace: ${{ steps.ns.outputs.owner_lc }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: ns
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+  # Note: a called workflow checks out the caller's ref (github.ref), so when
+  # `ref` points somewhere else, select that branch in the "Run workflow" menu
+  # instead, or the gate checks a different commit than the one being built.
+  check:
+    name: Quality gate
+    if: inputs.run_checks
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build:
+    name: Build ${{ matrix.image }}
+    needs: [resolve, check]
+    if: >-
+      !cancelled()
+      && needs.resolve.result == 'success'
+      && (needs.check.result == 'success' || needs.check.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - image: chatbotx-builder
+            dockerfile: ./apps/builder/docker/Dockerfile
+          - image: chatbotx-worker
+            dockerfile: ./apps/worker/docker/Dockerfile
+          - image: chatbotx-realtime
+            dockerfile: ./apps/realtime/docker/Dockerfile
+          - image: chatbotx-javascript-executor
+            dockerfile: ./apps/javascript-executor/docker/Dockerfile
+          - image: chatbotx-mcp
+            dockerfile: ./apps/mcp-server/docker/Dockerfile
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      # Same reason as release.yml: the Turbopack compile peaks near the
+      # runner's RAM. Best effort; the build proceeds without it.
+      - name: Add swap for the builder compile
+        if: matrix.image == 'chatbotx-builder'
+        continue-on-error: true
+        run: |
+          sudo fallocate -l 12G /mnt/ci-build.swap || sudo fallocate -l 12G /ci-build.swap
+          f=$(ls /mnt/ci-build.swap /ci-build.swap 2>/dev/null | head -1)
+          sudo chmod 600 "$f" && sudo mkswap "$f" && sudo swapon "$f"
+          free -h
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: ${{ env.BUILD_PLATFORMS }}
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ needs.resolve.outputs.namespace }}/${{ matrix.image }}:sha-${{ needs.resolve.outputs.sha }}
+            ${{ env.DOCKER_REGISTRY }}/${{ needs.resolve.outputs.namespace }}/${{ matrix.image }}:fork-latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
+          cache-from: type=gha,scope=fork-${{ matrix.image }}
+          cache-to: type=gha,scope=fork-${{ matrix.image }},mode=min
+
+      - name: Summary
+        run: echo "Pushed \`${{ matrix.image }}:sha-${{ needs.resolve.outputs.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to production
+    needs: [resolve, build]
+    if: inputs.deploy && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    # Add "Required reviewers" to this environment in Settings → Environments.
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Deploy over forced-command SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ vars.DEPLOY_HOST }}
+          USER: ${{ vars.DEPLOY_USER }}
+          TAG: sha-${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The server ignores everything but the tag (forced command).
+          ssh -i ~/.ssh/deploy -o StrictHostKeyChecking=yes "$USER@$HOST" "deploy $TAG"

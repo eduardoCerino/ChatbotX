@@ -1,0 +1,54 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# Main app: dashboard, API (/api, /rpc), OAuth callbacks and channel webhooks
+# (/integrations/<channel>/...), public pages, websocket and public files.
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# Realtime gateway: the client connects to wss://<app>/ws/rt/...;
+	# the gateway serves /rt/workspaces/:id and /rt/guests/:id.
+	handle_path /ws/* {
+		reverse_proxy realtime:1999
+	}
+
+	# Public object URLs (<app>/storage/<key>) → bucket, path-style.
+	# Only the bucket's public/ prefix is anonymous-readable (filesystem-init).
+	handle_path /storage/* {
+		rewrite * /{$S3_BUCKET}{uri}
+		reverse_proxy filesystem:9000
+	}
+
+	# next.config.ts rewrites /assets/* to <NEXT_PUBLIC_BUILDER_URL>/storage/*,
+	# but that rewrite is resolved at image build time (localhost). Serve it here.
+	handle_path /assets/* {
+		rewrite * /{$S3_BUCKET}{uri}
+		reverse_proxy filesystem:9000
+	}
+
+	# Optional MCP server (not started by default — see README).
+	# handle /mcp* {
+	# 	reverse_proxy mcp:3333
+	# }
+
+	handle {
+		reverse_proxy builder:3000
+	}
+}
+
+# S3 API endpoint for presigned uploads/downloads. S3_ENDPOINT points here so
+# the signed host the browser uses is the one RustFS verifies (Host preserved).
+{$S3_DOMAIN} {
+	request_body {
+		max_size 100MB
+	}
+	reverse_proxy filesystem:9000
+}
