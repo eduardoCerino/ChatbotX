@@ -39,8 +39,12 @@
 	# 	reverse_proxy mcp:3333
 	# }
 
+	# Retry while the builder restarts (deploys, crashes) instead of an instant 502.
 	handle {
-		reverse_proxy builder:3000
+		reverse_proxy builder:3000 {
+			lb_try_duration 15s
+			lb_try_interval 500ms
+		}
 	}
 }
 

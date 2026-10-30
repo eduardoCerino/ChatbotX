@@ -160,13 +160,23 @@ services:
     image: ghcr.io/${IMAGE_NAMESPACE}/chatbotx-builder:${IMAGE_TAG}
     # Migrations are NOT run on start: deploy.sh runs them explicitly after a
     # backup. The seed (demo user with a public password) is never run here.
+    #
+    # The entrypoint's `serve` path overwrites NODE_OPTIONS, so V8 fell back to
+    # its ~640 MB default heap and the server crashed with "heap out of memory"
+    # while rendering dashboard pages. Start node directly (the entrypoint
+    # execs any other command) with the same flags plus an explicit heap.
+    command:
+      - node
+      - --no-node-snapshot
+      - --enable-source-maps
+      - --max-old-space-size=1280
+      - apps/builder/server.js
     environment:
       SNOWFLAKE_PLACE_ID: "1"
-      # Docker sets HOSTNAME to the container id, so the entrypoint's
-      # ${HOSTNAME:-0.0.0.0} fallback never applies and Next binds only to the
-      # container IP (the 127.0.0.1 healthcheck then fails).
+      # Docker sets HOSTNAME to the container id, so Next would bind only to
+      # the container IP (the 127.0.0.1 healthcheck then fails).
       HOSTNAME: 0.0.0.0
-      NODE_OPTIONS: --max-old-space-size=900
+      PORT: "3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -177,7 +187,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1280M
+          memory: 1792M
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
