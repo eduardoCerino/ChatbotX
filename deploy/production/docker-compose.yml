@@ -162,6 +162,10 @@ services:
     # backup. The seed (demo user with a public password) is never run here.
     environment:
       SNOWFLAKE_PLACE_ID: "1"
+      # Docker sets HOSTNAME to the container id, so the entrypoint's
+      # ${HOSTNAME:-0.0.0.0} fallback never applies and Next binds only to the
+      # container IP (the 127.0.0.1 healthcheck then fails).
+      HOSTNAME: 0.0.0.0
       NODE_OPTIONS: --max-old-space-size=900
     depends_on:
       postgres:

@@ -11,7 +11,10 @@ dir=backups
 umask 077
 mkdir -p "$dir"
 
-set -a; . ./.env; set +a
+# .env is a compose env file, not shell: values like "Name <a@b>" must not be sourced.
+envval() { grep -m1 "^$1=" .env | cut -d= -f2-; }
+POSTGRES_USER=$(envval POSTGRES_USER)
+POSTGRES_DB=$(envval POSTGRES_DB)
 file="$dir/db-${ts}-${label}.dump"
 docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc > "$file"
 # A truncated dump must never count as a backup.

@@ -23,7 +23,8 @@ export IMAGE_TAG="$target"
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
 if [ -f "$STATE/ghcr-token" ]; then
-  set -a; . ./.env; set +a
+  # .env is a compose env file, not shell: never source it.
+  IMAGE_NAMESPACE=$(grep -m1 '^IMAGE_NAMESPACE=' .env | cut -d= -f2-)
   docker login ghcr.io -u "$IMAGE_NAMESPACE" --password-stdin < "$STATE/ghcr-token" >/dev/null
 fi
 
