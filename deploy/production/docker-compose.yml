@@ -20,7 +20,10 @@ x-app: &app
 
 services:
   postgres:
-    image: timescale/timescaledb-ha:pg18-all
+    # Upstream uses pg18-all (every PG major, 12.6 GB). pg18 alone (3.2 GB)
+    # ships the extensions the migrations need: timescaledb, vector, pg_trgm,
+    # btree_gist.
+    image: timescale/timescaledb-ha:pg18
     restart: unless-stopped
     logging: *logging
     networks: [internal]
