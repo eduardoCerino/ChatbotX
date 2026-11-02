@@ -8,7 +8,10 @@ import {
   generateShopifyBlogArticle,
 } from "../shopify-blog/openai"
 import { selectNextKeyword } from "../shopify-blog/select-next-keyword"
-import { publishOrReuseShopifyArticle } from "../shopify-blog/shopify-client"
+import {
+  publishOrReuseShopifyArticle,
+  resolveShopifyAccessToken,
+} from "../shopify-blog/shopify-client"
 
 const LOCK_KEY = "schedule:shopify-blog-publish"
 const LOCK_TTL_SECONDS = 10 * 60
@@ -18,8 +21,9 @@ const log = getChildLogger("publish-shopify-blog-article")
 export const isShopifyBlogPublisherConfigured = (): boolean =>
   Boolean(
     env.SHOPIFY_STORE_DOMAIN &&
-      env.SHOPIFY_ADMIN_ACCESS_TOKEN &&
-      env.SHOPIFY_BLOG_OPENAI_API_KEY,
+      env.SHOPIFY_BLOG_OPENAI_API_KEY &&
+      (env.SHOPIFY_ADMIN_ACCESS_TOKEN ||
+        (env.SHOPIFY_CLIENT_ID && env.SHOPIFY_CLIENT_SECRET)),
   )
 
 export async function publishShopifyBlogArticle(): Promise<void> {
@@ -60,9 +64,25 @@ const runPublishOnce = async (): Promise<void> => {
   }
 
   const storeDomain = env.SHOPIFY_STORE_DOMAIN
-  const accessToken = env.SHOPIFY_ADMIN_ACCESS_TOKEN
   const openAiKey = env.SHOPIFY_BLOG_OPENAI_API_KEY
-  if (!(storeDomain && accessToken && openAiKey)) {
+  if (!(storeDomain && openAiKey)) {
+    return
+  }
+
+  // Before generation, so a Shopify auth failure does not spend an OpenAI call.
+  let accessToken: string
+  try {
+    accessToken = await resolveShopifyAccessToken({
+      storeDomain,
+      accessToken: env.SHOPIFY_ADMIN_ACCESS_TOKEN,
+      clientId: env.SHOPIFY_CLIENT_ID,
+      clientSecret: env.SHOPIFY_CLIENT_SECRET,
+    })
+  } catch (err) {
+    log.error(
+      { err, keyword: next.keyword },
+      "Shopify blog publish: Shopify token request failed; will retry next day",
+    )
     return
   }
 

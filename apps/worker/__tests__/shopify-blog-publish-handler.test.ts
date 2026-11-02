@@ -5,6 +5,7 @@ const {
   recordPublication,
   generateShopifyBlogArticle,
   publishOrReuseShopifyArticle,
+  resolveShopifyAccessToken,
   runExclusive,
   isLockAcquisitionError,
 } = vi.hoisted(() => ({
@@ -12,6 +13,7 @@ const {
   recordPublication: vi.fn(),
   generateShopifyBlogArticle: vi.fn(),
   publishOrReuseShopifyArticle: vi.fn(),
+  resolveShopifyAccessToken: vi.fn(),
   runExclusive: vi.fn(async ({ fn }: { fn: () => Promise<void> }) => fn()),
   isLockAcquisitionError: vi.fn(() => false),
 }))
@@ -34,12 +36,15 @@ vi.mock("../src/schedule/shopify-blog/openai", () => ({
 
 vi.mock("../src/schedule/shopify-blog/shopify-client", () => ({
   publishOrReuseShopifyArticle,
+  resolveShopifyAccessToken,
 }))
 
 vi.mock("../src/env", () => ({
   env: {
     SHOPIFY_STORE_DOMAIN: "demo.myshopify.com",
-    SHOPIFY_ADMIN_ACCESS_TOKEN: "shpat_test",
+    SHOPIFY_ADMIN_ACCESS_TOKEN: undefined,
+    SHOPIFY_CLIENT_ID: "client-id",
+    SHOPIFY_CLIENT_SECRET: "client-secret",
     SHOPIFY_BLOG_OPENAI_API_KEY: "sk-test",
     SHOPIFY_ADMIN_API_VERSION: "2025-10",
     SHOPIFY_BLOG_ID: undefined,
@@ -66,9 +71,20 @@ describe("publishShopifyBlogArticle", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     listPublishedKeywords.mockResolvedValue([])
+    resolveShopifyAccessToken.mockResolvedValue("token-test")
     runExclusive.mockImplementation(
       async ({ fn }: { fn: () => Promise<void> }) => fn(),
     )
+  })
+
+  test("skips generation when the Shopify token request fails", async () => {
+    resolveShopifyAccessToken.mockRejectedValue(new Error("bad secret"))
+
+    await publishShopifyBlogArticle()
+
+    expect(generateShopifyBlogArticle).not.toHaveBeenCalled()
+    expect(publishOrReuseShopifyArticle).not.toHaveBeenCalled()
+    expect(recordPublication).not.toHaveBeenCalled()
   })
 
   test("does not record publication when OpenAI fails", async () => {
@@ -112,6 +128,11 @@ describe("publishShopifyBlogArticle", () => {
 
     await publishShopifyBlogArticle()
 
+    expect(publishOrReuseShopifyArticle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ accessToken: "token-test" }),
+      }),
+    )
     expect(recordPublication).toHaveBeenCalledWith(
       expect.objectContaining({
         keyword: "inositol para el sop",

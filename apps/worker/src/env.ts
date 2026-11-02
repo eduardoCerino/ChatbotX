@@ -142,9 +142,13 @@ export const env = createEnv({
       .max(1000)
       .default(10),
 
-    // Daily Shopify blog publisher (optional; cron registers only when all three are set).
+    // Daily Shopify blog publisher (optional; cron registers only when the store,
+    // an OpenAI key and either a static token or client ID + secret are set).
     SHOPIFY_STORE_DOMAIN: z.string().min(1).optional(),
     SHOPIFY_ADMIN_ACCESS_TOKEN: z.string().min(1).optional(),
+    // Dev Dashboard apps (no static token): client credentials grant.
+    SHOPIFY_CLIENT_ID: z.string().min(1).optional(),
+    SHOPIFY_CLIENT_SECRET: z.string().min(1).optional(),
     SHOPIFY_BLOG_OPENAI_API_KEY: z.string().min(1).optional(),
     SHOPIFY_ADMIN_API_VERSION: z.string().min(1).default("2025-10"),
     SHOPIFY_BLOG_ID: z.string().min(1).optional(),

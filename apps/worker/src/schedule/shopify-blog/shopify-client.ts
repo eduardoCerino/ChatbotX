@@ -57,6 +57,57 @@ const shopifyFetch = async <T>(
   return (await response.json()) as T
 }
 
+/**
+ * Returns the Admin API token for this run. A legacy custom app has a static
+ * `shpat_` token; a Dev Dashboard app (the only kind creatable since 2026)
+ * exchanges its client ID and secret for a 24-hour token via the client
+ * credentials grant, so a fresh one is requested on every run.
+ */
+export const resolveShopifyAccessToken = async (input: {
+  storeDomain: string
+  accessToken?: string
+  clientId?: string
+  clientSecret?: string
+  fetchImpl?: typeof fetch
+}): Promise<string> => {
+  if (input.accessToken) {
+    return input.accessToken
+  }
+  if (!(input.clientId && input.clientSecret)) {
+    throw new Error("Shopify credentials missing")
+  }
+
+  const fetchImpl = input.fetchImpl ?? fetch
+  const domain = input.storeDomain
+    .replace(PROTOCOL_RE, "")
+    .replace(TRAILING_SLASH_RE, "")
+  const response = await fetchImpl(
+    `https://${domain}/admin/oauth/access_token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+      }),
+    },
+  )
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "")
+    throw new Error(
+      `Shopify token request failed (${response.status}): ${body.slice(0, 500)}`,
+    )
+  }
+
+  const json = (await response.json()) as { access_token?: string }
+  if (!json.access_token) {
+    throw new Error("Shopify token response has no access_token")
+  }
+  return json.access_token
+}
+
 export const resolveShopifyBlogId = async (
   config: ShopifyBlogClientConfig,
 ): Promise<string> => {
