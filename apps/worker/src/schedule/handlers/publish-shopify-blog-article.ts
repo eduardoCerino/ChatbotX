@@ -2,6 +2,7 @@ import { shopifyBlogPublicationService } from "@chatbotx.io/business"
 import { getChildLogger } from "@chatbotx.io/logger"
 import { distributedLock, isLockAcquisitionError } from "@chatbotx.io/redis"
 import { env } from "../../env"
+import { isShopifyBlogPublisherConfigured } from "../shopify-blog/config"
 import { shopifyBlogKeywords } from "../shopify-blog/keywords"
 import {
   type GeneratedShopifyBlogArticle,
@@ -17,14 +18,6 @@ const LOCK_KEY = "schedule:shopify-blog-publish"
 const LOCK_TTL_SECONDS = 10 * 60
 const LOCK_ACQUIRE_RETRY_SECONDS = 5
 const log = getChildLogger("publish-shopify-blog-article")
-
-export const isShopifyBlogPublisherConfigured = (): boolean =>
-  Boolean(
-    env.SHOPIFY_STORE_DOMAIN &&
-      env.SHOPIFY_BLOG_OPENAI_API_KEY &&
-      (env.SHOPIFY_ADMIN_ACCESS_TOKEN ||
-        (env.SHOPIFY_CLIENT_ID && env.SHOPIFY_CLIENT_SECRET)),
-  )
 
 export async function publishShopifyBlogArticle(): Promise<void> {
   if (!isShopifyBlogPublisherConfigured()) {
