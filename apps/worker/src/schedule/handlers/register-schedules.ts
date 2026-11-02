@@ -8,6 +8,7 @@ import {
 } from "@chatbotx.io/worker-config"
 import { Queue } from "bullmq"
 import { env } from "../../env"
+import { isShopifyBlogPublisherConfigured } from "./publish-shopify-blog-article"
 
 /**
  * Quota/billing schedulers only make sense on the cloud edition. The trial
@@ -714,4 +715,27 @@ export const registerSchedules = async () => {
       },
     },
   )
+
+  // Operator-only Shopify blog publisher. Only register when credentials exist
+  // so a previous Redis scheduler does not keep firing after env is cleared.
+  if (isShopifyBlogPublisherConfigured()) {
+    await scheduleQueue.upsertJobScheduler(
+      ScheduleJobData.publishShopifyBlogArticle,
+      {
+        pattern: "0 8 * * *",
+        tz: "America/Mexico_City",
+      },
+      {
+        name: ScheduleJobData.publishShopifyBlogArticle,
+        data: {
+          type: ScheduleJobData.publishShopifyBlogArticle,
+          data: {},
+        },
+      },
+    )
+  } else {
+    await scheduleQueue.removeJobScheduler(
+      ScheduleJobData.publishShopifyBlogArticle,
+    )
+  }
 }

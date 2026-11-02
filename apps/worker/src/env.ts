@@ -141,6 +141,16 @@ export const env = createEnv({
       .min(1)
       .max(1000)
       .default(10),
+
+    // Daily Shopify blog publisher (optional; cron registers only when all three are set).
+    SHOPIFY_STORE_DOMAIN: z.string().min(1).optional(),
+    SHOPIFY_ADMIN_ACCESS_TOKEN: z.string().min(1).optional(),
+    SHOPIFY_BLOG_OPENAI_API_KEY: z.string().min(1).optional(),
+    SHOPIFY_ADMIN_API_VERSION: z.string().min(1).default("2025-10"),
+    SHOPIFY_BLOG_ID: z.string().min(1).optional(),
+    SHOPIFY_ARTICLE_AUTHOR: z.string().min(1).optional(),
+    SHOPIFY_PRODUCT_URL_INOSITOL: z.string().url().optional(),
+    SHOPIFY_PRODUCT_URL_CREATINA: z.string().url().optional(),
   },
   runtimeEnv: process.env,
   skipValidation: process.env.SKIP_ENV_CHECK === "true",

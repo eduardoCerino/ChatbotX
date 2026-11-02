@@ -38,6 +38,7 @@ import { maintainMacPartitions } from "./handlers/maintain-mac-partitions"
 import { materializeRecurringBroadcasts } from "./handlers/materialize-recurring-broadcasts"
 import { prepareBroadcast } from "./handlers/prepare-broadcast"
 import { processBroadcastContacts } from "./handlers/process-broadcast-contacts"
+import { publishShopifyBlogArticle } from "./handlers/publish-shopify-blog-article"
 import { purgeAutomationThrottle } from "./handlers/purge-automation-throttle"
 import { purgeBroadcasts } from "./handlers/purge-broadcasts"
 import { purgeCoexistStaging } from "./handlers/purge-coexist-staging"
@@ -247,6 +248,11 @@ async function startScheduleWorker() {
             // excludes schedule crons other than the two broadcast handlers).
             case ScheduleJobData.purgeErrorLogs:
               await purgeErrorLogs()
+              return
+
+            // Operator-only Shopify blog cron — no workspace scope.
+            case ScheduleJobData.publishShopifyBlogArticle:
+              await publishShopifyBlogArticle()
               return
 
             // Not workspace-scoped (the jobs they enqueue are guarded in the

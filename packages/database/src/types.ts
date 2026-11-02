@@ -195,6 +195,8 @@ export type IgStoryAutomationModel =
   typeof schema.igStoryAutomationModel.$inferSelect
 export type AuditLogModel = typeof schema.auditLogModel.$inferSelect
 export type SequenceModel = typeof schema.sequenceModel.$inferSelect
+export type ShopifyBlogPublicationModel =
+  typeof schema.shopifyBlogPublicationModel.$inferSelect
 export type SequenceStepModel = typeof schema.sequenceStepModel.$inferSelect
 export type ContactsOnSequenceModel =
   typeof schema.contactsOnSequenceModel.$inferSelect
